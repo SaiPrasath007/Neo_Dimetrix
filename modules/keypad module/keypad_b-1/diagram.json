@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "author": "NEO DIMETRIX",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-s3-devkitc-1", "id": "esp", "top": 95.82, "left": 33.37, "attrs": {} },
+    { "type": "board-ssd1306", "id": "oled", "top": 243.14, "left": -124.57, "attrs": {} },
+    { "type": "wokwi-pcf8574", "id": "pcf", "top": 100, "left": 150, "attrs": {} },
+    { "type": "wokwi-membrane-keypad", "id": "keypad", "top": -11.6, "left": 178.4, "attrs": {} }
+  ],
+  "connections": [
+    [ "esp:GND", "oled:GND", "black", [ "v0" ] ],
+    [ "esp:3V3", "oled:VCC", "red", [ "v0" ] ],
+    [ "esp:GND", "pcf:GND", "black", [ "v0" ] ],
+    [ "esp:3V3", "pcf:VCC", "red", [ "v0" ] ],
+    [ "esp:8", "pcf:SDA", "green", [ "v0" ] ],
+    [ "esp:9", "pcf:SCL", "yellow", [ "v0" ] ],
+    [ "pcf:P0", "keypad:R1", "green", [ "v0" ] ],
+    [ "pcf:P1", "keypad:R2", "green", [ "v0" ] ],
+    [ "pcf:P2", "keypad:R3", "green", [ "v0" ] ],
+    [ "pcf:P3", "keypad:R4", "green", [ "v0" ] ],
+    [ "pcf:P4", "keypad:C1", "blue", [ "v0" ] ],
+    [ "pcf:P5", "keypad:C2", "blue", [ "v0" ] ],
+    [ "pcf:P6", "keypad:C3", "blue", [ "v0" ] ],
+    [ "pcf:P7", "keypad:C4", "blue", [ "v0" ] ],
+    [ "keypad:R1", "esp:10", "green", [ "v0" ] ],
+    [ "keypad:R2", "esp:11", "green", [ "v0" ] ],
+    [ "keypad:R3", "esp:12", "green", [ "v0" ] ],
+    [ "keypad:R4", "esp:13", "green", [ "v0" ] ],
+    [ "keypad:C1", "esp:14", "green", [ "v0" ] ],
+    [ "keypad:C2", "esp:15", "green", [ "v0" ] ],
+    [ "keypad:C3", "esp:16", "green", [ "v0" ] ],
+    [ "keypad:C4", "esp:17", "green", [ "v0" ] ],
+    [ "oled:GND", "esp:GND.1", "black", [ "v0", "h-67.2", "v96" ] ],
+    [ "oled:VCC", "esp:3V3.1", "red", [ "v0" ] ],
+    [ "oled:SCL", "esp:9", "green", [ "v-9.6", "h86.7" ] ],
+    [ "oled:SDA", "esp:8", "green", [ "v0" ] ]
+  ],
+  "dependencies": {}
+}

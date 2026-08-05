@@ -1,0 +1,15 @@
+# Wokwi Library List
+# See https://docs.wokwi.com/guides/libraries
+
+# Display Libraries
+Adafruit GFX Library
+Adafruit SSD1306
+
+# Keypad Library (Direct GPIO)
+Keypad
+I2CKeyPad
+
+# Sensor Libraries
+HX711 Arduino Library
+Adafruit_VL53L0X
+I2CKeyPad
