@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "author": "Sai Prasath P",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-esp32-s3-devkitc-1",
+      "id": "esp",
+      "top": 6.47,
+      "left": -7.52,
+      "rotate": 90,
+      "attrs": {}
+    },
+    {
+      "type": "board-ssd1306",
+      "id": "oled1",
+      "top": 99.14,
+      "left": 173.03,
+      "attrs": { "i2cAddress": "0x3c" }
+    },
+    { "type": "wokwi-membrane-keypad", "id": "keypad1", "top": -261.2, "left": -100, "attrs": {} },
+    { "type": "wokwi-microsd-card", "id": "sd1", "top": 96.23, "left": -182.33, "attrs": {} }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "oled1:SCL", "esp:9", "green", [ "v0" ] ],
+    [ "oled1:SDA", "esp:8", "green", [ "v0" ] ],
+    [ "oled1:GND", "esp:GND.1", "black", [ "v-9.6", "h-278.4" ] ],
+    [ "oled1:VCC", "esp:3V3.1", "red", [ "v0" ] ],
+    [ "sd1:CS", "esp:10", "green", [ "h0" ] ],
+    [ "sd1:VCC", "esp:3V3.1", "red", [ "h0" ] ],
+    [ "sd1:GND", "esp:GND.1", "black", [ "h0" ] ],
+    [ "sd1:DI", "esp:11", "green", [ "h0" ] ],
+    [ "sd1:DO", "esp:13", "green", [ "h0" ] ],
+    [ "keypad1:R1", "esp:1", "green", [ "v0" ] ],
+    [ "keypad1:R2", "esp:2", "green", [ "v0" ] ],
+    [ "keypad1:R3", "esp:41", "green", [ "v0" ] ],
+    [ "keypad1:R4", "esp:42", "green", [ "v0" ] ],
+    [ "keypad1:C1", "esp:39", "green", [ "v0" ] ],
+    [ "keypad1:C2", "esp:40", "green", [ "v0" ] ],
+    [ "keypad1:C3", "esp:37", "green", [ "v0" ] ],
+    [ "keypad1:C4", "esp:38", "green", [ "v0" ] ],
+    [ "sd1:SCK", "esp:12", "green", [ "h0" ] ]
+  ],
+  "dependencies": {}
+}
