@@ -43,11 +43,7 @@ struct DiagnosticResult {
     float deltaZScore;                   // Simple Z-score shift (Z_curr - Z_prev)
 };
 
-struct LMS_Params {
-    float L;
-    float M;
-    float S;
-};
+// NOTE: LMS_Params struct removed from here because it is already inside who_tables.h
 
 // --- MAIN DIAGNOSTIC EVALUATOR FUNCTION ---
 DiagnosticResult evaluatePatientDiagnostics(const CurrentMeasurement& current, 
