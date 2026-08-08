@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <math.h>
+#include "who_tables.h"
 
 // --- DATA STRUCTURES & ENUMS ---
 
@@ -47,16 +48,6 @@ struct LMS_Params {
     float M;
     float S;
 };
-
-// --- HELPER LMS INTERPOLATION (MOCK/FLASH LOOKUP) ---
-LMS_Params getInterpolatedLMS(float lengthCm, bool isMale) {
-    // In production, this reads PROGMEM tables and interpolates L, M, S
-    LMS_Params lms;
-    lms.L = -0.3521f;
-    lms.M = (isMale) ? (0.15f * lengthCm - 4.2f) : (0.14f * lengthCm - 4.0f);
-    lms.S = 0.0910f;
-    return lms;
-}
 
 // --- MAIN DIAGNOSTIC EVALUATOR FUNCTION ---
 DiagnosticResult evaluatePatientDiagnostics(const CurrentMeasurement& current, 
