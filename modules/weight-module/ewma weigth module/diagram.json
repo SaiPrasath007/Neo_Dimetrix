@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "author": "Sai Prasath P",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-esp32-s3-devkitc-1",
+      "id": "esp",
+      "top": 13.58,
+      "left": -148.57,
+      "rotate": 180,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-hx711",
+      "id": "cell1",
+      "top": 127.4,
+      "left": -16.6,
+      "attrs": { "type": "5kg" }
+    }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "esp:3V3.1", "cell1:VCC", "green", [ "v0", "h48.05" ] ],
+    [ "cell1:DT", "esp:4", "green", [ "h-9.6", "v-0.5" ] ],
+    [ "cell1:SCK", "esp:5", "green", [ "h-28.8", "v37.6" ] ],
+    [ "cell1:GND", "esp:GND.1", "black", [ "h-28.8", "v-105.9" ] ]
+  ],
+  "dependencies": {}
+}
