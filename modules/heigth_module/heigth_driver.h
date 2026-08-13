@@ -7,10 +7,6 @@
 #include <Preferences.h> // ESP32 Non-Volatile Storage (NVS)
 #include <algorithm>     // For std::sort (median filtering)
 
-// Hardware I2C Pin Definitions for ESP32-S3
-#define TOF_SDA_PIN 8
-#define TOF_SCL_PIN 9
-
 // --- ToF Diagnostic Payload ---
 struct LengthReading {
     float rawDistanceMm;       // Instantaneous distance measured by laser (mm)
@@ -55,16 +51,15 @@ private:
 
 public:
     bool begin() {
-        // 1. Initialize Hardware I2C on GPIO 8 (SDA) and GPIO 9 (SCL)
-        Wire.begin(TOF_SDA_PIN, TOF_SCL_PIN);
+        // Wire.begin() is handled centrally by main.ino
 
-        // 2. Initialize VL53L0X ToF Sensor
+        // Initialize VL53L0X ToF Sensor over shared I2C bus
         if (!lox.begin()) {
             Serial.println("❌ VL53L0X ToF Sensor NOT detected!");
             return false;
         }
 
-        // 3. Load Bed Length limit calibration from NVS Flash
+        // Load Bed Length limit calibration from NVS Flash
         prefs.begin("ndm_tof", true); // Read-only mode
         bedLengthMm = prefs.getInt("bed_len_mm", 800);
         prefs.end();
@@ -126,7 +121,7 @@ public:
                 // NO silent clamping: Out-of-bounds readings invalidate the measurement
                 if (distanceMm < MIN_CLINICAL_LENGTH_MM || distanceMm > (float)bedLengthMm) {
                     reading.isValid = false;
-                    resetBuffer(); // Clear buffer to prevent stale values from locking
+                    resetBuffer(); // Purge stale buffer data
                     return reading;
                 }
 
