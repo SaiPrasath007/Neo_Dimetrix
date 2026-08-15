@@ -1,96 +1,180 @@
-┌──────────────────────────────────────────────┐
-                     │ CALL: evaluatePatientDiagnostics()           │
-                     │ Inputs: current (W, L, Sex), history (Cloud) │
-                     └──────────────────────┬───────────────────────┘
-                                            │
-                                            ▼
-                     ┌──────────────────────────────────────────────┐
-                     │ 1. Initialize result struct with defaults    │
-                     │    isValid = false, isFaltering = false      │
-                     └──────────────────────┬───────────────────────┘
-                                            │
-                                            ▼
-                                  /───────────────────\
-                                 /  Sanity Boundary    \
-                                /   45 <= L <= 110 cm   \
-                                \   1.5 <= W <= 25 kg   /
-                                 \─────────────────────/
-                                    │               │
-                            [ NO ]  │               │ [ YES ]
-                 ┌──────────────────┘               └──────────────────┐
-                 ▼                                                     ▼
-    ┌─────────────────────────┐                           ┌─────────────────────────┐
-    │ RETURN:                 │                           │ isValid = true          │
-    │ isValid = false         │                           └────────────┬────────────┘
-    │ (Abort - Bad Data)      │                                        │
-    └─────────────────────────┘                                        ▼
-                                                          ┌─────────────────────────┐
-                                                          │ 2. Query WHO LMS Table  │
-                                                          │    (Boys / Girls Array) │
-                                                          └────────────┬────────────┘
-                                                                       │
-                                                                       ▼
-                                                          ┌─────────────────────────┐
-                                                          │ 3. Compute Box-Cox      │
-                                                          │    Z-Score (current)    │
-                                                          └────────────┬────────────┘
-                                                                       │
-                                                                       ▼
-                                                          ┌─────────────────────────┐
-                                                          │ 4. Map Acute Status     │
-                                                          │ (SAM/MAM/Normal/Obese)  │
-                                                          └────────────┬────────────┘
-                                                                       │
-                                                                       ▼
-                                                            /─────────────────────\
-                                                           /    history.hasHistory \
-                                                          /   && daysElapsed > 0?   \
-                                                          \─────────────────────────/
-                                                              │                 │
-                                                      [ NO ]  │                 │ [ YES ]
-                                           ┌──────────────────┘                 └──────────────────┐
-                                           │                                                       │
-                                           │                                                       ▼
-                                           │                                     ┌───────────────────────────────────┐
-                                           │                                     │ 5. Compute Longitudinal Metrics:  │
-                                           │                                     │    - deltaZ = Z_curr - Z_prev     │
-                                           │                                     │    - weightVelocity (g/month)     │
-                                           │                                     │    - absPrev = |Z_prev|           │
-                                           │                                     │    - absCurr = |Z_curr|           │
-                                           │                                     │    - distanceDrift = absCurr-absPrev│
-                                           │                                     └─────────────────┬─────────────────┘
-                                           │                                                       │
-                                           │                                                       ▼
-                                           │                                             /───────────────────\
-                                           │                                            /    distanceDrift    \
-                                           │                                           /       >= 0.5 SD?      \
-                                           │                                           \───────────────────────/
-                                           │                                              │                 │
-                                           │                                      [ NO ]  │                 │ [ YES ]
-                                           │                           ┌──────────────────┘                 └──────────────────┐
-                                           │                           │                                                       │
-                                           │                           ▼                                                       ▼
-                                           │             ┌─────────────────────────┐                             ┌─────────────────────────┐
-                                           │             │ isFaltering = false     │                             │ isFaltering = true      │
-                                           │             │ falteringCause = NONE   │                             └────────────┬────────────┘
-                                           │             │ (Normalizing/Recovering)│                                          │
-                                           │             └────────────┬────────────┘                                          ▼
-                                           │                          │                                            /─────────────────────\
-                                           │                          │                                           /    currentZScore      \
-                                           │                          │                                          /    < history.prevZScore\
-                                           │                          │                                          \────────────────────────/
-                                           │                          │                                              │                │
-                                           │                          │                                      [ YES ] │                │ [ NO ]
-                                           │                          │                               ┌──────────────┘                └──────────────┐
-                                           │                          │                               ▼                                              ▼
-                                           │                          │                 ┌───────────────────────────┐                  ┌───────────────────────────┐
-                                           │                          │                 │ falteringCause =          │                  │ falteringCause =          │
-                                           │                          │                 │ TOWARDS_MALNUTRITION      │                  │ TOWARDS_OBESITY           │
-                                           │                          │                 └─────────────┬─────────────┘                  └─────────────┬─────────────┘
-                                           │                          │                               │                                              │
-                                           └──────────────────────────┴───────────────┬───────────────┴──────────────────────────────────────────────┘
-                                                                                      │
-                                                                                      ▼
-                                                                        ┌───────────────────────────┐
-                                                                        │ RETURN: DiagnosticResult  │
-                                                                        └───────────────────────────┘
+====================================================================================================
+               NEO DIMETRIX: COMPLETE SYSTEM WORKFLOW & ARCHITECTURE
+====================================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                             PART 1: BEDSIDE CLINICAL MEASUREMENT FSM                             │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+ [ SYSTEM STARTUP ]
+         │
+         ▼
+┌─────────────────────────────────────────┐
+│ Initialization (main.ino):              │
+│ - I2C Fast-Mode (GPIO 8, 9 @ 400kHz)    │
+│ - SPI SD Card (CS=5): Verify Folders    │
+│   (/pre_val/ and /post_val/)            │
+│ - Scale, ToF, Keypad, UI Drivers Loaded │
+└──────────────────┬──────────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────────┐ ◄───────────────────────────────────────────────────┐
+│ STATE 1: PATIENT REGISTRATION           │                                                     │
+│ - OLED: Prompt for Birth Certificate ID │                                                     │
+│ - Keypad: Input ID string               │                                                     │
+│ - [*]: Backspace | [#]: Confirm ID      │                                                     │
+└──────────────────┬──────────────────────┘                                                     │
+                   │ [#] Key Pressed                                                            │
+                   ▼                                                                            │
+┌─────────────────────────────────────────┐                                                     │
+│ STATE 2: SCALE TARE PLATFORM            │                                                     │
+│ - OLED: "Clear Bed / Place Blanket"     │                                                     │
+│ - Keypad [#]: Execute scale.tare()      │                                                     │
+└──────────────────┬──────────────────────┘                                                     │
+                   │ Tare Complete                                                              │
+                   ▼                                                                            │
+┌─────────────────────────────────────────┐ ◄────────────────┐                                  │
+│ STATE 3: LIVE WEIGHING                  │                  │                                  │
+│ - HX711 10Hz sampling + EWMA filter     │                  │                                  │
+│ - 30-sample rolling stability window    │                  │                                  │
+│ - OLED: Live kg + Lock Progress Bar     │                  │                                  │
+└──────────────────┬──────────────────────┘                  │                                  │
+                   │ Weight Locked (Jitter <= 8g)            │                                  │
+                   ▼                                         │                                  │
+┌─────────────────────────────────────────┐                  │                                  │
+│ STATE 4: LIVE LENGTH MEASUREMENT        │                  │                                  │
+│ - VL53L0X ToF 5Hz sampling              │                  │                                  │
+│ - 10-sample median filter window (2 sec)│                  │ [*] Redo                         │
+│ - OLED: Live cm + Lock Progress Bar     │                  │ Measurement                      │
+└──────────────────┬──────────────────────┘                  │                                  │
+                   │ Length Locked (Jitter <= 5mm)           │                                  │
+                   ▼                                         │                                  │
+┌─────────────────────────────────────────┐                  │                                  │
+│ WHO LMS DIAGNOSTIC CALCULATION          │                  │                                  │
+│ - Match Infant Length (45.0 - 80.0 cm)  │                  │                                  │
+│ - Fetch L, M, S parameters from PROGMEM │                  │                                  │
+│ - Z = [ (Weight/M)^L - 1 ] / (L * S)    │                  │                                  │
+│ - Instant Triage: SAM, MAM, or NORMAL   │                  │                                  │
+└──────────────────┬──────────────────────┘                  │                                  │
+                   │                                         │                                  │
+                   ▼                                         │                                  │
+┌─────────────────────────────────────────┐                  │                                  │
+│ STATE 5: DIAGNOSTIC SUMMARY SCREEN      │                  │                                  │
+│ - OLED: ID, Weight, Length, WLZ, Status │                  │                                  │
+│ - [#]: Confirm / Save | [*]: Redo       │──────────────────┘                                  │
+└──────────────────┬──────────────────────┘                                                     │
+                   │ [#] Key Pressed                                                            │
+                   ▼                                                                            │
+     /───────────────────────────\                                                              │
+    /      Is Wi-Fi Connected?    \                                                             │
+    \─────────────────────────────/                                                             │
+              │             │                                                                   │
+      [ YES ] │             │ [ NO ]                                                            │
+┌─────────────┘             └─────────────┐                                                     │
+▼                                         ▼                                                     │
+┌───────────────────────────────┐ ┌───────────────────────────────────────────────────────────┐ │
+│ ONLINE MEASUREMENT PATH:      │ │ OFFLINE MEASUREMENT PATH:                                 │ │
+│ 1. Read /pre_val/<ID>.csv     │ │ 1. Set Trajectory = "PENDING"                             │ │
+│ 2. Compute delta-Z Trajectory │ │ 2. Create Outbox file:                                    │ │
+│ 3. HTTP POST Payload to Cloud │ │    /post_val/<ID>_<millis>.json                           │ │
+│ 4. If HTTP 200/201:           │ │ 3. Verify write (bytesWritten > 0)                        │ │
+│    - Append to /pre_val/      │ │ 4. Flash OLED: "Saved Offline 💾"                         │ │
+│    - Flash OLED: "Synced ☁️"  │ └─────────────────────────┬─────────────────────────────────┘ │
+└──────────────┬────────────────┘                           │                                   │
+               │                                            │                                   │
+               └────────────────────┬───────────────────────┘                                   │
+                                    │                                                           │
+                                    ▼                                                           │
+                        ( Reset Input Buffer & ) ───────────────────────────────────────────────┘
+                        ( Return to STATE 1    )
+
+
+====================================================================================================
+                 PART 2: SD CARD DUAL-FOLDER ARCHITECTURE (STORAGE MODEL)
+====================================================================================================
+
+ SD_CARD_ROOT/
+ ├── pre_val/                            <-- LOCAL HISTORICAL CACHE (Permanent per-child record)
+ │   ├── BCN-2026-001.csv                <-- Stores: Date,Time,Weight,Length,WLZ,Category,Trajectory
+ │   └── BCN-2026-089.csv                <-- Used to pull baseline Z(t-1) for Delta-Z trajectory
+ │
+ └── post_val/                           <-- OUTGOING SYNC OUTBOX (Transient JSON queue)
+     ├── BCN-2026-002_1771142000.json    <-- Stored with trajectory: "PENDING"
+     └── BCN-2026-045_1771142800.json    <-- Deleted ONLY after HTTP 200/201 & verified pre_val append
+
+
+====================================================================================================
+        PART 3: SILENT BACKGROUND SYNC & DELTA-Z TRAJECTORY ENGINE (IDLE WORKER)
+====================================================================================================
+
+                                 ( main.ino: loop() execution )
+                                                │
+                                                ▼
+                               /─────────────────────────────────\
+                              /     Is System IDLE / Resting?     \
+                             /   (uiState == UI_STATE_PATIENT_ID   \
+                             \       && No Baby on Scale Platform) /
+                              \─────────────────────────────────/
+                                           │             │
+                                   [ YES ] │             │ [ NO: Active Measurement ]
+                        ┌──────────────────┘             └──────────────────┐
+                        ▼                                                   ▼
+          /───────────────────────────\                            ( Skip Background Sync; )
+         /      Is Wi-Fi Connected     \                           ( Prioritize Bed Sensor )
+        <  (WiFi.status() == WL_CONNECTED) >
+         \─────────────────────────────/
+                        │             │
+                [ YES ] │             │ [ NO ]
+         ┌──────────────┘             └──────────────┐
+         ▼                                           ▼
+/─────────────────────────────────\            ( Do Nothing: Yield CPU )
+/     Are there pending files in  \
+\             /post_val/?         /
+\─────────────────────────────────/
+         │                   │
+ [ YES ] │                   │ [ NO ]
+ ┌───────┘                   └───────┐
+ ▼                                   ▼
+┌──────────────────────────────────┐ ( All Synced: Outbox Empty )
+│ 1. PEEK NEXT PENDING RECORD:     │
+│ - Open oldest JSON in /post_val/ │
+│ - OLED REMAINS UNTOUCHED         │
+│   (Zero bedside UI disruption)   │
+└────────────────┬─────────────────┘
+                 │
+                 ▼
+┌──────────────────────────────────┐
+│ 2. SILENT DELTA-Z TRAJECTORY:    │
+│ - Open /pre_val/<ID>.csv         │
+│ - Extract prior visit Z(t-1)     │
+│ - Calculate Delta Z = Z(t)-Z(t-1)│
+│   * <= -0.50 SD -> "FALTERING"   │
+│   * >= +0.50 SD -> "CATCH_UP"    │
+│   * In-Between  -> "STABLE"      │
+│   * No prior CSV-> "BASELINE"    │
+└────────────────┬─────────────────┘
+                 │
+                 ▼
+┌──────────────────────────────────┐
+│ 3. TRANSMIT TO CLOUD API:        │
+│ - HTTP POST complete payload +   │
+│   calculated Delta-Z trajectory  │
+└────────────────┬─────────────────┘
+                 │
+                 ▼
+       /───────────────────\
+      /   HTTP 200 / 201?   \
+      \───────────────────/
+             │         │
+     [ YES ] │         │ [ NO / Timeout ]
+  ┌──────────┘         └──────────┐
+  ▼                               ▼
+┌───────────────────────────────┐ ┌───────────────────────────────┐
+│ 4. GUARDED ATOMIC COMMIT:     │ │ Keep file in /post_val/       │
+│ - Append row to /pre_val/<ID> │ │ (Retry on next idle loop tick)│
+│ - Verify (bytesWritten > 0)   │ └───────────────────────────────┘
+│ - Delete JSON from /post_val/ │
+└──────────────┬────────────────┘
+               │
+               ▼
+  ( Process Next Item or Sleep )

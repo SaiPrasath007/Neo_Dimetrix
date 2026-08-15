@@ -1,0 +1,232 @@
+====================================================================================================
+                             SD DRIVER (SDDriver) ISOLATED WORKFLOW
+====================================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 1. INITIALIZATION WORKFLOW: begin(cs, sck, miso, mosi)                                           │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+                               ( CALL: sdDriver.begin(...) )
+                                             │
+                                             ▼
+                               ┌───────────────────────────┐
+                               │ Configure SPI Bus & CS    │
+                               │ Attempt SD.begin(csPin)   │
+                               └─────────────┬─────────────┘
+                                             │
+                               /───────────────────────────\
+                              /     Is SD Card Mounted      \
+                             /   & cardType != CARD_NONE?    \
+                             \───────────────────────────────/
+                                        │             │
+                                [ YES ] │             │ [ NO ]
+                         ┌──────────────┘             └──────────────┐
+                         ▼                                           ▼
+          ┌───────────────────────────┐                ┌───────────────────────────┐
+          │ Set cardMounted = true    │                │ Set cardMounted = false   │
+          │ createDirectories():      │                │ Log SPI/Mount Error       │
+          │ - Ensure /pre_val/ exists │                │ Return false              │
+          │ - Ensure /post_val/ exists│                └───────────────────────────┘
+          └──────────────┬────────────┘
+                         │
+                         ▼
+                 ( Return true ✅ )
+
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 2. OFFLINE ENQUEUE WORKFLOW: saveOfflinePostVal(...)                                             │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+                 ( CALL: sdDriver.saveOfflinePostVal(ID, sex, date, time, W, L, Z, cat) )
+                                             │
+                                             ▼
+                               /───────────────────────────\
+                              /     Is SD Card Mounted?     \
+                             /     (cardMounted == true)     \
+                             \───────────────────────────────/
+                                        │             │
+                                [ YES ] │             │ [ NO ]
+                         ┌──────────────┘             └──────────────┐
+                         │                                           ▼
+                         │                             ┌───────────────────────────┐
+                         │                             │ Attempt Auto-Mount        │
+                         │                             │ begin(csPin)              │
+                         │                             └─────────────┬─────────────┘
+                         │                                           │
+                         │                            /─────────────────────────────\
+                         │                           /         Mount Succeeded?      \
+                         │                          <   (cardMounted == true)?        >
+                         │                           \─────────────────────────────/
+                         │                                      │             │
+                         │                              [ YES ] │             │ [ NO ]
+                         │                       ┌──────────────┘             └─────────┐
+                         ▼                       ▼                                      ▼
+          ┌──────────────────────────────────────────────┐                ┌───────────────────────────┐
+          │ Generate file path:                          │                │ Return false (SD Offline) │
+          │ /post_val/<patientID>_<millis>.json          │                └───────────────────────────┘
+          │ Open file in FILE_WRITE mode                 │
+          └──────────────────────┬───────────────────────┘
+                                 │
+                                 ▼
+          ┌──────────────────────────────────────────────┐
+          │ Format Single-Line NDJSON Payload:           │
+          │ {"id": "...", "wlz": Z, "trajectory":        │
+          │  "PENDING", ...}                             │
+          └──────────────────────┬───────────────────────┘
+                                 │
+                                 ▼
+          ┌──────────────────────────────────────────────┐
+          │ file.println(jsonBuffer)                     │
+          │ file.flush() -> file.close()                 │
+          └──────────────────────┬───────────────────────┘
+                                 │
+                                 ▼
+                   /───────────────────────────\
+                  /      bytesWritten > 0?      \
+                  \─────────────────────────────/
+                             │             │
+                     [ YES ] │             │ [ NO ]
+              ┌──────────────┘             └──────────────┐
+              ▼                                           ▼
+┌───────────────────────────┐               ┌───────────────────────────┐
+│ Outbox Enqueue Confirmed  │               │ SD.remove(filePath)       │
+│ Return true ✅             │               │ Return false ❌           │
+└───────────────────────────┘               └───────────────────────────┘
+
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 3. SILENT PEEK WORKFLOW: getNextPendingPostVal(rec)                                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+                           ( CALL: sdDriver.getNextPendingPostVal(rec) )
+                                                 │
+                                                 ▼
+                                   /───────────────────────────\
+                                  /     Is SD Card Mounted?     \
+                                  \───────────────────────────/
+                                             │             │
+                                     [ YES ] │             │ [ NO ]
+                              ┌──────────────┘             └──────────────┐
+                              ▼                                           ▼
+               ┌───────────────────────────┐                     ( Return false )
+               │ Open directory /post_val/ │
+               │ Iterate openNextFile()    │
+               └──────────────┬────────────┘
+                              │
+               /───────────────────────────\
+              /       Is a valid File       \
+             <      found in /post_val/?     >
+              \─────────────────────────────/
+                         │             │
+                 [ YES ] │             │ [ NO / Empty ]
+          ┌──────────────┘             └──────────────┐
+          ▼                                           ▼
+┌──────────────────────────────────────────┐    ┌───────────────────────────┐
+│ 1. Populate rec.filename = file.path()   │    │ Close directory           │
+│ 2. Read single NDJSON line into stack buf│    │ Return false (No work)    │
+│ 3. sscanf(...) extracts:                 │    └───────────────────────────┘
+│    ID, Sex, Date, Time, W, L, Z(t), Cat  │
+│ 4. Close file & root directory handle    │
+└─────────────────────┬────────────────────┘
+                      │
+                      ▼
+              ( Return true ✅ )
+              ( Payload ready for Sync )
+
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 4. EDGE TRAJECTORY ANALYTICS: computeEdgeTrajectory(ID, currentZ, outTraj, maxLen, &deltaZ)     │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+               ( CALL: sdDriver.computeEdgeTrajectory(patientID, currentZ, ...) )
+                                             │
+                                             ▼
+                               /───────────────────────────\
+                              /     Does baseline file      \
+                             /    /pre_val/<ID>.csv exist?   \
+                             \───────────────────────────────/
+                                        │             │
+                                [ YES ] │             │ [ NO: First Ever Visit ]
+                         ┌──────────────┘             └──────────────┐
+                         ▼                                           ▼
+          ┌───────────────────────────┐                ┌───────────────────────────┐
+          │ Open /pre_val/<ID>.csv    │                │ outTrajectory = "BASELINE"│
+          │ Scan to find the last row │                │ *outDeltaZ = 0.0f         │
+          │ Close file                │                │ Return true               │
+          └─────────────┬─────────────┘                └───────────────────────────┘
+                        │
+                        ▼
+          ┌───────────────────────────┐
+          │ Parse previous visit Z:   │
+          │ Extract Z(t-1) from line  │
+          └─────────────┬─────────────┘
+                        │
+                        ▼
+          ┌───────────────────────────┐
+          │ Calculate Centile Shift:  │
+          │ Delta Z = Z(t) - Z(t-1)   │
+          └─────────────┬─────────────┘
+                        │
+                        ▼
+          /───────────────────────────\
+         /      Evaluate Shift Value   \
+        <          against Limits       >
+         \─────────────────────────────/
+           │            │            │
+           │ <= -0.50   │ >= +0.50   │ -0.50 < Delta Z < +0.50
+           ▼            ▼            ▼
+ ┌───────────────┐ ┌───────────┐ ┌───────────┐
+ │ "FALTERING"   │ │"CATCH_UP" │ │ "STABLE"  │
+ │ (Down Channel)│ │(Recovery) │ │(On Track) │
+ └───────┬───────┘ └─────┬─────┘ └─────┬─────┘
+         │               │             │
+         └───────────────┼─────────────┘
+                         │
+                         ▼
+                 ( Return true ✅ )
+
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 5. GUARDED TRANSACTION COMMIT: commitSyncedRecord(postValPath, ID, date, time, W, L, Z, cat, tr)│
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+          ( CALL: sdDriver.commitSyncedRecord(postValPath, patientID, date, time, ...) )
+                                             │
+                                             ▼
+                               ┌───────────────────────────┐
+                               │ Target Local Cache:       │
+                               │ /pre_val/<patientID>.csv  │
+                               └─────────────┬─────────────┘
+                                             │
+                                             ▼
+                               /───────────────────────────\
+                              /     Open /pre_val/<ID>.csv  \
+                             /       in FILE_APPEND mode?    \
+                             \───────────────────────────────/
+                                        │             │
+                                [ YES ] │             │ [ NO: Card full / Error ]
+                         ┌──────────────┘             └──────────────┐
+                         ▼                                           ▼
+          ┌───────────────────────────┐                ┌───────────────────────────┐
+          │ If file is new:           │                │ ABORT TRANSACTION:        │
+          │   Write CSV column header │                │ Keep postValPath in queue │
+          │ Write row:                │                │ Return false ❌           │
+          │   Date,Time,W,L,Z,Cat,Traj│                └───────────────────────────┘
+          │ file.flush()              │
+          │ file.close()              │
+          └─────────────┬─────────────┘
+                        │
+                        ▼
+          /───────────────────────────\
+         /      Bytes written > 0      \
+        <       & flush verified?       >
+         \─────────────────────────────/
+                    │             │
+            [ YES ] │             │ [ NO: Incomplete Write ]
+     ┌──────────────┘             └──────────────┐
+     ▼                                           ▼
+┌───────────────────────────┐              ┌───────────────────────────┐
+│ PURGE FROM OUTBOX:        │              │ PRESERVE OUTBOX:          │
+│ SD.remove(postValPath)    │              │ Do NOT delete postValPath │
+│ Return true ✅             │              │ Return false ❌           │
+└───────────────────────────┘              └───────────────────────────┘
