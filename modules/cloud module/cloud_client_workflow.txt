@@ -1,0 +1,203 @@
+====================================================================================================
+               CLOUD MODULE (CloudClient) ISOLATED WORKFLOW & ARCHITECTURE
+====================================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 1. INITIALIZATION & KEEP-ALIVE WORKFLOW: begin() & maintainConnection()                          │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+                       ( CALL: cloudClient.begin(ssid, pass, url, apiKey) )
+                                                 │
+                                                 ▼
+                               ┌───────────────────────────────────┐
+                               │ Store credentials & API endpoints │
+                               │ Set WiFi.mode(WIFI_STA)           │
+                               │ Initiate WiFi.begin(ssid, pass)   │
+                               └─────────────────┬─────────────────┘
+                                                 │
+                                                 ▼
+                                    ( Return to setup() Core )
+
+                                                 │
+                                                 ▼
+                       [ Non-Blocking Background Loop: maintainConnection() ]
+                                                 │
+                                                 ▼
+                                   /───────────────────────────\
+                                  /       Is Wi-Fi Connected    \
+                                 <    (WiFi.status()==CONNECTED)? >
+                                  \───────────────────────────/
+                                             │             │
+                                     [ YES ] │             │ [ NO ]
+                              ┌──────────────┘             └──────────────┐
+                              ▼                                           ▼
+                    ( Connection Stable )                   /───────────────────────────\
+                    ( Return immediately)                  /   Has 10s elapsed since     \
+                                                          <    last reconnect attempt?    >
+                                                           \─────────────────────────────/
+                                                                      │             │
+                                                              [ YES ] │             │ [ NO ]
+                                                       ┌──────────────┘             └──────────┐
+                                                       ▼                                       ▼
+                                         ┌───────────────────────────┐                 ( Rate Limited: )
+                                         │ Update lastAttempt timer  │                 ( Yield CPU     )
+                                         │ Trigger WiFi.reconnect()  │
+                                         └───────────────────────────┘
+
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 2. UPLOAD TRANSACTION PIPELINE: uploadRecord(...)                                                │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+ ( CALL: cloudClient.uploadRecord(patientID, sex, date, time, W, L, Z, cat, trajectory, deltaZ, vel) )
+                                                 │
+                                                 ▼
+                                   /───────────────────────────\
+                                  /       Is Wi-Fi Active?      \
+                                 <   (WiFi.status()==CONNECTED)? >
+                                  \───────────────────────────/
+                                             │             │
+                                     [ YES ] │             │ [ NO ]
+                              ┌──────────────┘             └──────────────┐
+                              ▼                                           ▼
+┌──────────────────────────────────────────────┐                ┌───────────────────────────┐
+│ 1. ZERO-HEAP BUFFER SERIALIZATION:           │                │ Return false (Offline)    │
+│    snprintf(jsonPayload, sizeof, ...)        │                └───────────────────────────┘
+│    - Stack buffer: char jsonPayload[384]     │
+│    - Embeds W, L, Z(t), ΔZ, Velocity, Traj   │
+└─────────────────────┬────────────────────────┘
+                      │
+                      ▼
+┌──────────────────────────────────────────────┐
+│ 2. HTTP CLIENT INITIALIZATION:               │
+│    - http.begin(endpointUrl)                 │
+│    - Set Fast-Fail Timeout (5000 ms)         │
+│    - Header: "Content-Type: application/json"│
+│    - Header: "X-API-Key: <key>"              │
+└─────────────────────┬────────────────────────┘
+                      │
+                      ▼
+┌──────────────────────────────────────────────┐
+│ 3. TRANSMISSION:                             │
+│    int httpCode = http.POST(jsonPayload)     │
+└─────────────────────┬────────────────────────┘
+                      │
+                      ▼
+        /─────────────────────────────\
+       /    Evaluate HTTP Status Code  \
+      <       Returned by Server        >
+       \─────────────────────────────/
+                  │             │
+  [ HTTP 200 OK / │             │ [ 4xx Client Error, 5xx Server Error, ]
+    201 CREATED ] │             │ [ Network Timeout (-1), Connection Refused]
+  ┌───────────────┘             └───────────────┐
+  ▼                                             ▼
+┌──────────────────────────────┐ ┌──────────────────────────────────────────────┐
+│ 4. CONFIRM SUCCESS:          │ │ 4. HANDLE FAILURE:                           │
+│ - http.end()                 │ │ - http.end()                                 │
+│ - Log Server ACK Code        │ │ - Log HTTP Error / Timeout details           │
+│ - Return true ✅              │ │ - Return false ❌                            │
+│   (Triggers SD Driver to     │ │   (Preserves JSON file in /post_val/ for     │
+│    purge outbox item)        │ │    retry on next idle cycle)                 │
+└──────────────────────────────┘ └──────────────────────────────────────────────┘
+
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 3. HISTORICAL CACHE PULL WORKFLOW: fetchPatientHistory(...)                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+                  ( CALL: cloudClient.fetchPatientHistory(patientID, outPayload) )
+                                                 │
+                                                 ▼
+                                   /───────────────────────────\
+                                  /       Is Wi-Fi Active?      \
+                                 <   (WiFi.status()==CONNECTED)? >
+                                  \───────────────────────────/
+                                             │             │
+                                     [ YES ] │             │ [ NO ]
+                              ┌──────────────┘             └──────────────┐
+                              ▼                                           ▼
+┌──────────────────────────────────────────────┐                ┌───────────────────────────┐
+│ 1. FORMAT REST QUERY:                        │                │ Return false (No Network) │
+│    snprintf(queryUrl, ... "?patient_id=%s")  │                └───────────────────────────┘
+│ 2. http.begin(queryUrl)                      │
+│ 3. Add API Key Header                        │
+└─────────────────────┬────────────────────────┘
+                      │
+                      ▼
+┌──────────────────────────────────────────────┐
+│ 4. EXECUTE HTTP GET:                         │
+│    int httpCode = http.GET()                 │
+└─────────────────────┬────────────────────────┘
+                      │
+                      ▼
+        /─────────────────────────────\
+       /        httpCode == 200?       \
+      \───────────────────────────────/
+                  │             │
+          [ YES ] │             │ [ NO ]
+   ┌──────────────┘             └──────────────┐
+   ▼                                           ▼
+┌──────────────────────────────┐ ┌───────────────────────────┐
+│ outPayload = http.getString()│ │ http.end()                │
+│ http.end()                   │ │ Return false              │
+│ Return true ✅                │ └───────────────────────────┘
+│ (Saves baseline to /pre_val/)│
+└──────────────────────────────┘
+
+
+====================================================================================================
+                  4. CLOUD BACKEND INGESTION & DATA PROCESSING ARCHITECTURE
+====================================================================================================
+
+               [ Incoming HTTP POST Payload: /api/v1/measurements ]
+                                       │
+                                       ▼
+                     /───────────────────────────────────\
+                    /    Validate API Key & JSON Schema   \
+                    \───────────────────────────────────/
+                                   │             │
+                           [ Valid ]             [ Invalid ]
+                               │                         │
+                               ▼                         ▼
+             ┌──────────────────────────────────┐ ┌─────────────────────────────┐
+             │ Authenticated Request Accepted   │ │ Return 401/400 Bad Request  │
+             └─────────────────┬────────────────┘ └─────────────────────────────┘
+                               │
+                               ▼
+             ┌──────────────────────────────────┐
+             │ Extract Primary Key (patient_id) │
+             │ Query Patient Growth Profile     │
+             └─────────────────┬────────────────┘
+                               │
+                               ▼
+             ┌──────────────────────────────────────────────────┐
+             │ DATABASE INGESTION (PostgreSQL / Firestore):     │
+             │ - Append measurement record to time-series table │
+             │ - Store Weight, Length, WLZ, ΔZ, Velocity        │
+             │ - Record clinical timestamp (date + time)        │
+             └─────────────────┬────────────────────────────────┘
+                               │
+                               ▼
+             /──────────────────────────────────\
+            /      Triage & Alert Evaluation     \
+           <    (category == SAM || trajectory   >
+            \       == FALTERING)?               /
+             \──────────────────────────────────/
+                        │             │
+                [ YES ] │             │ [ NO: Normal Growth ]
+         ┌──────────────┘             └──────────────┐
+         ▼                                           ▼
+┌──────────────────────────────────┐ ┌──────────────────────────────────┐
+│ TRIGGER CLINICAL ALERTS:         │ │ STANDARD UPDATE:                 │
+│ - Flag child profile on Dashboard│ │ - Update dynamic growth curve    │
+│ - Dispatch alert to Health Worker│ │ - Refresh cohort analytics       │
+└────────────────┬─────────────────┘ └────────────────┬─────────────────┘
+                 │                                    │
+                 └──────────────────┬─────────────────┘
+                                    │
+                                    ▼
+                     ┌──────────────────────────────┐
+                     │ Send HTTP 201 CREATED Status │
+                     │ Response back to ESP32-S3    │
+                     └──────────────────────────────┘
