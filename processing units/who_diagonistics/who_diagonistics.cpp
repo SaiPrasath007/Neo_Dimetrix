@@ -1,76 +1,35 @@
-#include <Arduino.h>
+#include "who_diagnostics.h"
 #include <math.h>
-#include "who_tables.h"
 
-// --- DATA STRUCTURES & ENUMS ---
-
-enum AcuteStatus {
-    STATUS_SAM,          // Severe Acute Malnutrition (Z < -3.0)
-    STATUS_MAM,          // Moderate Acute Malnutrition (-3.0 <= Z < -2.0)
-    STATUS_NORMAL,       // Normal / Eutrophic (-2.0 <= Z <= +2.0)
-    STATUS_OVERWEIGHT,   // Overweight Risk (+2.0 < Z <= +3.0)
-    STATUS_OBESE         // Obese (Z > +3.0)
-};
-
-enum FalteringReason {
-    FALTERING_NONE,                  // Trajectory improving/stable (moving towards 0)
-    FALTERING_TOWARDS_MALNUTRITION,  // Drifting negative away from 0
-    FALTERING_TOWARDS_OBESITY        // Drifting positive away from 0
-};
-
-struct CurrentMeasurement {
-    float weightKg;       // Measured weight (kg)
-    float lengthCm;       // Measured length (cm)
-    bool isMale;          // true = Male, false = Female
-    uint8_t ageMonths;    // Patient age in completed months (0 to 24)
-};
-
-struct CloudPatientHistory {
-    bool hasHistory;      // true if previous visit data exists
-    float prevWeightKg;   // Weight from last visit
-    float prevLengthCm;   // Length from last visit
-    float prevZScore;     // Z-score from last visit
-    uint16_t daysElapsed; // Days between last visit and today
-};
-
-struct DiagnosticResult {
-    bool isValid;                        // Input sanity check flag
-    float currentZScore;                 // Computed WLZ Z-score
-    AcuteStatus currentStatus;           // Point-in-time clinical classification
-    bool isFaltering;                    // High-priority trajectory alert flag
-    FalteringReason falteringCause;     // Direction of drift (Obesity or Malnutrition)
-    float weightVelocityGramsPerMonth; // Normalized growth rate (g/30 days)
-    float deltaZScore;                   // Simple Z-score shift (Z_curr - Z_prev)
-};
-
-// NOTE: LMS_Params struct removed from here because it is already inside who_tables.h
-
-// --- MAIN DIAGNOSTIC EVALUATOR FUNCTION ---
+// --- MAIN DIAGNOSTIC & TRAJECTORY EVALUATION ENGINE ---
 DiagnosticResult evaluatePatientDiagnostics(const CurrentMeasurement& current, 
                                            const CloudPatientHistory& history) 
 {
     DiagnosticResult result;
     
-    // Default safe initializations
+    // 0. Default Safe Initializations
     result.isValid = false;
     result.currentZScore = 0.0f;
     result.currentStatus = STATUS_NORMAL;
+    result.trajectory = TRAJECTORY_BASELINE;
     result.isFaltering = false;
-    result.falteringCause = FALTERING_NONE;
     result.weightVelocityGramsPerMonth = 0.0f;
     result.deltaZScore = 0.0f;
 
-    // 1. INPUT SANITY & BOUNDARY VALIDATION
+    // 1. SENSOR SANITY & CLINICAL BOUNDARY VALIDATION
+    // WHO Weight-for-Length standards apply to recumbent lengths between 45.0 cm and 110.0 cm
     if (current.lengthCm < 45.0f || current.lengthCm > 110.0f || 
-        current.weightKg < 1.5f   || current.weightKg > 25.0f) {
-        return result; // Early exit on invalid sensor data
+        current.weightKg < 1.5f   || current.weightKg > 25.0f ||
+        current.ageMonths > 24) {
+        return result; // Early exit on invalid physiological ranges
     }
     result.isValid = true;
 
     // 2. WHO LMS PARAMETER RETRIEVAL & Z-SCORE CALCULATION
+    // Note: WHO WLZ index is parameterized by recumbent length and sex (0-24 months cohort)
     LMS_Params lms = getInterpolatedLMS(current.lengthCm, current.isMale);
     
-    if (fabs(lms.L) > 0.0001f) {
+    if (fabsf(lms.L) > 0.0001f) {
         result.currentZScore = (powf((current.weightKg / lms.M), lms.L) - 1.0f) / (lms.L * lms.S);
     } else {
         result.currentZScore = logf(current.weightKg / lms.M) / lms.S;
@@ -89,35 +48,60 @@ DiagnosticResult evaluatePatientDiagnostics(const CurrentMeasurement& current,
         result.currentStatus = STATUS_OBESE;
     }
 
-    // 4. LONGITUDINAL TRAJECTORY & GROWTH FALTERING ENGINE
-    if (history.hasHistory && history.daysElapsed > 0) {
-        // Calculate Z-Score shift and weight growth velocity
+    // 4. LONGITUDINAL DELTA-Z (ΔZ) TRAJECTORY ENGINE
+    if (history.hasHistory) {
+        // Standard deviation shift: ΔZ = Z(t) - Z(t-1)
         result.deltaZScore = result.currentZScore - history.prevZScore;
-        
-        float deltaWeightKg = current.weightKg - history.prevWeightKg;
-        result.weightVelocityGramsPerMonth = (deltaWeightKg / (float)history.daysElapsed) * 30.0f * 1000.0f;
 
-        // Distance to median (0 SD) analysis
-        float absPrev = fabsf(history.prevZScore);
-        float absCurr = fabsf(result.currentZScore);
-        float distanceDrift = absCurr - absPrev;
-
-        const float DRIFT_THRESHOLD = 0.5f; // Filter out small sensor fluctuations
-
-        // Trigger faltering ONLY if moving away from 0 SD past threshold
-        if (distanceDrift >= DRIFT_THRESHOLD) {
-            result.isFaltering = true;
-            if (result.currentZScore < history.prevZScore) {
-                result.falteringCause = FALTERING_TOWARDS_MALNUTRITION;
-            } else {
-                result.falteringCause = FALTERING_TOWARDS_OBESITY;
-            }
-        } else {
-            // Convergence to 0 SD or within noise margin -> No Faltering Alert
-            result.isFaltering = false;
-            result.falteringCause = FALTERING_NONE;
+        // Normalized growth velocity (grams / 30-day window)
+        if (history.daysElapsed > 0) {
+            float deltaWeightKg = current.weightKg - history.prevWeightKg;
+            result.weightVelocityGramsPerMonth = (deltaWeightKg / (float)history.daysElapsed) * 30.0f * 1000.0f;
         }
+
+        // Screening thresholds for centile trajectory drift
+        if (result.deltaZScore <= -0.50f) {
+            // Negative drift across growth channels -> Early Faltering Alert
+            result.trajectory = TRAJECTORY_FALTERING;
+            result.isFaltering = true;
+        } else if (result.deltaZScore >= 0.50f) {
+            // Positive drift across growth channels -> Catch-up growth / Recovery
+            result.trajectory = TRAJECTORY_CATCH_UP;
+            result.isFaltering = false;
+        } else {
+            // Tracking along expected centile curve
+            result.trajectory = TRAJECTORY_STABLE;
+            result.isFaltering = false;
+        }
+    } else {
+        // No prior baseline on record
+        result.trajectory = TRAJECTORY_BASELINE;
+        result.isFaltering = false;
     }
 
     return result;
+}
+
+// --- STRING CONVERTER HELPERS ---
+
+const char* getAcuteStatusString(AcuteStatus status) {
+    switch (status) {
+        case STATUS_SAM:        return "SAM";
+        case STATUS_MAM:        return "MAM";
+        case STATUS_NORMAL:     return "NORMAL";
+        case STATUS_OVERWEIGHT: return "OVERWEIGHT";
+        case STATUS_OBESE:      return "OBESE";
+        default:                return "UNKNOWN";
+    }
+}
+
+const char* getTrajectoryStatusString(TrajectoryStatus trajectory) {
+    switch (trajectory) {
+        case TRAJECTORY_BASELINE:  return "BASELINE";
+        case TRAJECTORY_STABLE:    return "STABLE";
+        case TRAJECTORY_FALTERING: return "FALTERING";
+        case TRAJECTORY_CATCH_UP:  return "CATCH_UP";
+        case TRAJECTORY_PENDING:   return "PENDING";
+        default:                   return "UNKNOWN";
+    }
 }
