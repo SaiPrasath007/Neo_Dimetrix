@@ -7,10 +7,10 @@
 #include <FS.h>
 
 // --- Default SPI Pin Definitions for ESP32-S3 ---
-#define DEFAULT_SD_CS_PIN   5
-#define DEFAULT_SD_SCK_PIN  18
-#define DEFAULT_SD_MISO_PIN 19
-#define DEFAULT_SD_MOSI_PIN 23
+#define DEFAULT_SD_CS_PIN   10
+#define DEFAULT_SD_MOSI_PIN 11
+#define DEFAULT_SD_SCK_PIN  12
+#define DEFAULT_SD_MISO_PIN 13
 
 // Diagnostic Struct for Silent Background Processing
 struct PendingRecord {

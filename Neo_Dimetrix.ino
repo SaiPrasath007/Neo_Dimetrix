@@ -3,23 +3,25 @@
 #include <SPI.h>
 
 // --- SUB-SYSTEM DRIVERS ---
-#include "modules/keypad module/keypad_driver.h"
-#include "modules/weight-module/scale_driver.h"
-#include "modules/heigth_module/heigth_driver.h"
-#include "modules/display module/ui_engine.h"
-#include "modules/sdcard module/sd_driver.h"
-#include "modules/cloud module/cloud_client.h"
-#include "processing units/who_diagnostics/who_diagnostics.h"
+#include "modules/keypad_module/keypad_driver.h"
+#include "modules/weight_module/scale_driver.h"
+#include "modules/height_module/height_driver.h"
+#include "modules/display_module/ui_engine.h"
+#include "modules/sd_module/sd_driver.h"
+#include "modules/cloud_module/cloud_client.h"
+#include "processing_units/who_diagnostics/who_diagnostics.h"
 
 // --- HARDWARE PIN ASSIGNMENTS (ESP32-S3) ---
 #define I2C_SDA_PIN         8
 #define I2C_SCL_PIN         9
 
-#define SD_CS_PIN           5
-#define SD_SCK_PIN          18
-#define SD_MISO_PIN         19
-#define SD_MOSI_PIN         23
+// MicroSD SPI Pins (ESP32-S3 Default Hardware SPI)
+#define SD_CS_PIN           10
+#define SD_MOSI_PIN         11
+#define SD_SCK_PIN          12
+#define SD_MISO_PIN         13
 
+// Load Cell HX711 Pins
 #define HX711_DOUT_PIN      4
 #define HX711_SCK_PIN       6
 
@@ -28,10 +30,10 @@ const uint8_t KEYPAD_ROW_PINS[4] = {1, 2, 42, 41};
 const uint8_t KEYPAD_COL_PINS[4] = {40, 39, 38, 37};
 
 // --- NETWORK & CLOUD CREDENTIALS ---
-const char* WIFI_SSID     = "NEO_CLINIC_WIFI";
-const char* WIFI_PASS     = "SecurePass2026";
-const char* CLOUD_API_URL = "https://api.neodimetrix.org/v1/measurements";
-const char* CLOUD_API_KEY = "ndm_sec_live_98a7fbc210";
+const char* WIFI_SSID     = "Parthasarathi_5G";
+const char* WIFI_PASS     = "rajasekar";
+const char* CLOUD_API_URL = "https://webhook.site/mock-test";
+const char* CLOUD_API_KEY = "dummy_key_2026";
 
 // --- SYSTEM STATES ---
 enum SystemState {
@@ -51,14 +53,14 @@ SDDriver      sdDriver;
 CloudClient   cloudClient;
 
 // --- RUNTIME APPLICATION BUFFERS ---
-SystemState      currentState       = STATE_PATIENT_REGISTRATION;
+SystemState      currentState         = STATE_PATIENT_REGISTRATION;
 char             currentPatientID[16] = "";
-uint8_t          patientIDIndex     = 0;
-bool             patientIsMale      = true;     // Default: Male ('A' to toggle gender)
-uint8_t          patientAgeMonths   = 6;        // Default cohort age: 6 months
+uint8_t          patientIDIndex       = 0;
+bool             patientIsMale        = true;
+uint8_t          patientAgeMonths     = 6;
 
-float            lockedWeightKg     = 0.0f;
-float            lockedLengthCm     = 0.0f;
+float            lockedWeightKg       = 0.0f;
+float            lockedLengthCm       = 0.0f;
 DiagnosticResult currentDiagnostic;
 
 // --- FORWARD DECLARATIONS ---
@@ -82,14 +84,14 @@ void setup() {
 
     // 1. Central I2C Bus Setup (OLED + VL53L0X ToF)
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-    Wire.setClock(400000); // 400kHz Fast-Mode I2C
+    Wire.setClock(400000);
 
     // 2. Display Engine Initialization
     if (!uiEngine.begin()) {
         Serial.println("❌ UI Engine (SSD1306) failed to start.");
     }
 
-    // 3. SD Card Filesystem & Folder Structure
+    // 3. SD Card Filesystem & Folder Structure (ESP32-S3 SPI)
     if (!sdDriver.begin(SD_CS_PIN, SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN)) {
         Serial.println("⚠️ SD Card offline. System will operate in volatile mode.");
     }
@@ -105,10 +107,10 @@ void setup() {
         Serial.println("❌ VL53L0X Laser Ranging sensor offline.");
     }
 
-    // 7. Cloud Connectivity
+    // 7. Cloud Connectivity (Non-blocking Wi-Fi)
     cloudClient.begin(WIFI_SSID, WIFI_PASS, CLOUD_API_URL, CLOUD_API_KEY);
 
-    // Initial Screen
+    // Initial Display Screen
     uiEngine.showRegistrationScreen(currentPatientID, patientIsMale);
     Serial.println("✅ System Initialized. Ready in STATE_PATIENT_REGISTRATION.");
 }
@@ -117,7 +119,7 @@ void setup() {
 // MAIN LOOP: NON-BLOCKING FINITE STATE MACHINE
 // ============================================================================
 void loop() {
-    // 1. Background network management
+    // 1. Background Wi-Fi health maintainer
     cloudClient.maintainConnection();
 
     // 2. Scan Keypad non-blockingly
@@ -127,7 +129,7 @@ void loop() {
     switch (currentState) {
         case STATE_PATIENT_REGISTRATION:
             handleRegistrationState(key);
-            runSilentBackgroundSync(); // Only runs when scale is resting
+            runSilentBackgroundSync();
             break;
 
         case STATE_TARE_PROMPT:
@@ -198,20 +200,18 @@ void handleTareState(char key) {
 // STATE 3: LIVE WEIGHING HANDLER
 // ============================================================================
 void handleWeighingState(char key) {
-    // Poll weight sensor at 10Hz
     scaleDriver.update();
     float currentWeight = scaleDriver.getFilteredWeight();
     bool isStable = scaleDriver.isStable();
 
     uiEngine.showWeighingScreen(currentWeight, isStable);
 
-    // Auto-advance on lock or manual confirm with '#'
     if (key == '#' && isStable) {
         lockedWeightKg = currentWeight;
         heightDriver.resetFilter();
         currentState = STATE_LIVE_LENGTH;
         Serial.printf("🔒 Weight Locked: %.3f kg\n", lockedWeightKg);
-    } else if (key == '*') { // Redo Tare
+    } else if (key == '*') {
         currentState = STATE_TARE_PROMPT;
         uiEngine.showTarePrompt();
     }
@@ -221,7 +221,6 @@ void handleWeighingState(char key) {
 // STATE 4: LIVE LENGTH MEASUREMENT HANDLER
 // ============================================================================
 void handleLengthState(char key) {
-    // Poll ToF laser sensor at 5Hz
     heightDriver.update();
     float currentLength = heightDriver.getFilteredHeight();
     bool isStable = heightDriver.isStable();
@@ -231,7 +230,6 @@ void handleLengthState(char key) {
     if (key == '#' && isStable) {
         lockedLengthCm = currentLength;
 
-        // Run On-Chip WHO Diagnostics
         CurrentMeasurement measurement;
         measurement.weightKg   = lockedWeightKg;
         measurement.lengthCm   = lockedLengthCm;
@@ -239,7 +237,7 @@ void handleLengthState(char key) {
         measurement.ageMonths  = patientAgeMonths;
 
         CloudPatientHistory history;
-        history.hasHistory = false; // Evaluated dynamically against local/cloud records
+        history.hasHistory = false;
 
         currentDiagnostic = evaluatePatientDiagnostics(measurement, history);
 
@@ -250,7 +248,7 @@ void handleLengthState(char key) {
         Serial.printf("📏 Length Locked: %.1f cm | WHO Z-Score: %+.2f (%s)\n", 
                       lockedLengthCm, currentDiagnostic.currentZScore, 
                       getAcuteStatusString(currentDiagnostic.currentStatus));
-    } else if (key == '*') { // Redo Weight
+    } else if (key == '*') {
         currentState = STATE_LIVE_WEIGHING;
     }
 }
@@ -259,22 +257,20 @@ void handleLengthState(char key) {
 // STATE 5: DIAGNOSTIC SUMMARY & SAVE HANDLER
 // ============================================================================
 void handleSummaryState(char key) {
-    if (key == '#') { // Commit & Save Record
+    if (key == '#') {
         commitBedsideRecord();
-        
-        // Reset state for next patient
         memset(currentPatientID, 0, sizeof(currentPatientID));
         patientIDIndex = 0;
         currentState = STATE_PATIENT_REGISTRATION;
-        delay(1200); // Brief hold for confirmation feedback
+        delay(1200);
         uiEngine.showRegistrationScreen(currentPatientID, patientIsMale);
-    } else if (key == '*') { // Cancel and remeasure
+    } else if (key == '*') {
         currentState = STATE_LIVE_WEIGHING;
     }
 }
 
 // ============================================================================
-// DUAL-PATH SAVE DISPATCHER (BEDSIDE LOGIC)
+// DUAL-PATH COMMIT DISPATCHER (ONLINE HTTP / OFFLINE SD OUTBOX)
 // ============================================================================
 void commitBedsideRecord() {
     const char* dateStr = "2026-08-28";
@@ -282,7 +278,6 @@ void commitBedsideRecord() {
     const char* statusStr = getAcuteStatusString(currentDiagnostic.currentStatus);
 
     if (cloudClient.isConnected()) {
-        // ONLINE PATH: Compute live trajectory against /pre_val/<ID>.csv
         char computedTrajectory[16];
         float deltaZ = 0.0f;
         sdDriver.computeEdgeTrajectory(currentPatientID, currentDiagnostic.currentZScore, 
@@ -303,7 +298,6 @@ void commitBedsideRecord() {
         );
 
         if (uploadSuccess) {
-            // Append directly to local permanent cache
             sdDriver.commitSyncedRecord("", currentPatientID, dateStr, timeStr, 
                                         lockedWeightKg, lockedLengthCm, 
                                         currentDiagnostic.currentZScore, statusStr, computedTrajectory);
@@ -313,7 +307,7 @@ void commitBedsideRecord() {
         }
     }
 
-    // OFFLINE PATH (Fallback): Write payload to /post_val/ queue
+    // Offline Outbox Fallback (/post_val/)
     bool offlineSaved = sdDriver.saveOfflinePostVal(
         currentPatientID,
         patientIsMale ? 'M' : 'F',
@@ -335,14 +329,13 @@ void commitBedsideRecord() {
 }
 
 // ============================================================================
-// SILENT BACKGROUND SYNC WORKER (ZERO OLED DISRUPTION)
+// SILENT BACKGROUND SYNC WORKER
 // ============================================================================
 void runSilentBackgroundSync() {
     if (!cloudClient.isConnected() || currentState != STATE_PATIENT_REGISTRATION) {
         return;
     }
 
-    // Rate-limit sync checks to avoid slamming SD bus
     static unsigned long lastSyncCheck = 0;
     if (millis() - lastSyncCheck < 4000) return;
     lastSyncCheck = millis();
@@ -352,11 +345,9 @@ void runSilentBackgroundSync() {
         char computedTrajectory[16];
         float deltaZ = 0.0f;
 
-        // 1. Compute longitudinal trajectory silently from /pre_val/<ID>.csv
         sdDriver.computeEdgeTrajectory(rec.patientID, rec.zScore, 
                                        computedTrajectory, sizeof(computedTrajectory), &deltaZ);
 
-        // 2. Transmit to Cloud Endpoint
         bool uploadSuccess = cloudClient.uploadRecord(
             rec.patientID,
             rec.sex,
@@ -371,7 +362,6 @@ void runSilentBackgroundSync() {
             0.0f
         );
 
-        // 3. On Verified HTTP 200/201: Commit to /pre_val/ and purge /post_val/
         if (uploadSuccess) {
             sdDriver.commitSyncedRecord(
                 rec.filename,
@@ -384,7 +374,7 @@ void runSilentBackgroundSync() {
                 rec.category,
                 computedTrajectory
             );
-            Serial.printf("🧹 [Silent Sync]: Processed & purged %s for Patient %s\n", rec.filename, rec.patientID);
+            Serial.printf("🧹 [Silent Sync]: Purged %s for Patient %s\n", rec.filename, rec.patientID);
         }
     }
 }
